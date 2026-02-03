@@ -1363,6 +1363,7 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         _isBlacklisted[account] = false;
         emit AddressUnBlacklisted(account);
     }
+    // END NEW ADDITIONS
     //to recieve ETH from uniswapV2Router when swaping
     receive() external payable {}
 
