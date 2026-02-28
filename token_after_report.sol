@@ -985,7 +985,7 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
     bool public swapAndLiquifyEnabled;
 
     uint256 private numTokensSellToAddToLiquidity;
-    uint256 private _lastManualBurnTimestamp; // NEW ADDITION
+    uint256 private _lastManualBurnTimestamp;
 
     event MinTokensBeforeSwapUpdated(uint256 minTokensBeforeSwap);
     event SwapAndLiquifyAmountUpdated(uint256 amount);
@@ -994,7 +994,7 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         uint256 ethReceived,
         uint256 tokensIntoLiqudity
     );
-    event ManualBurn(address indexed burner, uint256 amount); // NEW ADDITION
+    event ManualBurn(address indexed burner, uint256 amount);
     event AddressBlacklisted(address indexed account);
     event AddressUnBlacklisted(address indexed account);
     event LiquidityAdded(uint256 tokenAmount, uint256 ethAmount, uint256 liquidity);
@@ -1366,7 +1366,6 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         _isBlacklisted[account] = false;
         emit AddressUnBlacklisted(account);
     }
-    // END NEW ADDITIONS
     //to recieve ETH from uniswapV2Router when swaping
     receive() external payable {}
 
@@ -1635,7 +1634,7 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         // make the swap
         uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
             tokenAmount,
-            amountOutMin, // <--- CHANGED FROM 0
+            amountOutMin,
             path,
             address(this),
             block.timestamp
