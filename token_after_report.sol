@@ -1664,8 +1664,8 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         uint256 balance = address(this).balance;
         require(balance > 0, "No ETH to withdraw");
         
-        // Transfer the ETH to the owner
-        payable(msg.sender).transfer(balance);
+        (bool success, ) = payable(msg.sender).call{value: balance}("");
+        require(success, "ETH transfer failed");
     }
 
     //this method is responsible for taking all fee, if takeFee is true
