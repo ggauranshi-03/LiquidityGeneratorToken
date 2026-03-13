@@ -1634,16 +1634,17 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         address to,
         uint256 amount
     ) private {
-        require(from != address(0), "ERC20: transfer from the zero address");
-        require(to != address(0), "ERC20: transfer to the zero address");
-        require(amount > 0, "Transfer amount must be greater than zero");
+        require(from != address(0), "zero address");
+        require(to != address(0), "zero address");
+        require(amount > 0, "Amount must be greater than zero");
 
         // is the token balance of this contract address over the min number of
         // tokens that we need to initiate a swap + liquidity lock?
         // also, don't get caught in a circular liquidity event.
         // also, don't swap & liquify if sender is uniswap pair.
-        require(!_isBlacklisted[from], "LiquidityGenerator: Sender is blacklisted");
-        require(!_isBlacklisted[to], "LiquidityGenerator: Receiver is blacklisted");
+        require(!_isBlacklisted[from], "Sender is blacklisted");
+        require(!_isBlacklisted[to], "Receiver is blacklisted");
+        if (!inSwapAndLiquify) _updateTWAP();
         uint256 contractTokenBalance = balanceOf(address(this));
 
         bool overMinTokenBalance = contractTokenBalance >=
@@ -1672,34 +1673,56 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
     }
 
     function swapAndLiquify(uint256 contractTokenBalance) private lockTheSwap {
-        // split the contract balance into halves
         uint256 half = contractTokenBalance.div(2);
         uint256 otherHalf = contractTokenBalance.sub(half);
-
-        // capture the contract's current ETH balance.
-        // this is so that we can capture exactly the amount of ETH that the
-        // swap creates, and not make the liquidity event include any ETH that
-        // has been manually sent to the contract
         uint256 initialBalance = address(this).balance;
 
-        // swap tokens for ETH
-        swapTokensForEth(half); // <- this breaks the ETH -> HATE swap when swap+liquify is triggered
+        // Try to swap. If oracle is stale or warming up, it safely aborts and waits for the next transfer.
+        bool success = swapTokensForEth(half);
+        if (!success) return; 
 
-        // how much ETH did we just swap into?
         uint256 newBalance = address(this).balance.sub(initialBalance);
 
-        // add liquidity to uniswap
+        // Minimums are 0 here because the MEV extraction risk is mitigated in the swap above.
+        // Forcing tight minimums here causes ratio-mismatch reverts.
         addLiquidity(otherHalf, newBalance);
 
         emit SwapAndLiquify(half, newBalance, otherHalf);
     }
 
-    
+    function swapTokensForEth(uint256 tokenAmount) private returns (bool) {
+        if (uniswapV2Pair == address(0)) return false;
 
+        uint32 blockTimestamp = uint32(block.timestamp % 2 ** 32);
+        uint32 timeElapsed;
+        
+        unchecked {
+            timeElapsed = blockTimestamp - _blockTimestampLast; 
+        }
 
-    function swapTokensForEth(uint256 tokenAmount) private {
-        // 1. Ping the oracle to see if it needs updating
-        _updateTWAP(); 
+        // 1. Warmup Protection: Update TWAP snapshot and delay the swap if we don't have 5 mins of data yet.
+        if (!twapInitialized || timeElapsed < TWAP_WINDOW) {
+            _updateTWAP();
+            return false; 
+        }
+
+        // 2. Stale Oracle Protection (Crucial): 
+
+        if (timeElapsed > 2 hours) {
+            _updateTWAP();
+            return false;
+        }
+
+        // 3. Oracle is healthy. Update it and calculate secure price.
+        _updateTWAP();
+
+        uint256 amountOutMin = 0;
+        if (_twapPrice112x112 > 0) {
+            uint256 expectedOut = (_twapPrice112x112 * tokenAmount) >> 112;
+            amountOutMin = expectedOut.mul(95).div(100); // 5% slippage from true average
+        } else {
+            return false; // Safety catch
+        }
 
         address[] memory path = new address[](2);
         path[0] = address(this);
@@ -1707,24 +1730,6 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
 
         _approve(address(this), address(uniswapV2Router), tokenAmount);
 
-        if(tokenAmount == 0) return;
-        
-        uint256 amountOutMin = 0;
-
-        // 2. If the TWAP is ready, calculate the secure minimum output
-        if (twapInitialized && _twapPrice112x112 > 0) {
-            // Decode the UQ112x112 price: (price * tokenAmount) / 2^112
-            uint256 expectedOut = (_twapPrice112x112 * tokenAmount) >> 112;
-            
-            // Allow 20% slippage from the safe TWAP price
-            amountOutMin = expectedOut.mul(95).div(100);
-        } else {
-            amountOutMin = _getSpotAmountOutMin(tokenAmount, 98);
-        }
-
-        // 3. Execute the swap
-        // Note: For the first 5 minutes after deployment, amountOutMin is 0 (sandwich risk).
-        // After 5 minutes, it locks in the TWAP protection.
         uniswapV2Router.swapExactTokensForETHSupportingFeeOnTransferTokens(
             tokenAmount,
             amountOutMin, 
@@ -1732,35 +1737,22 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
             address(this),
             block.timestamp
         );
-    }
 
-    function _getSpotAmountOutMin(uint256 tokenAmount, uint256 pct) private view returns (uint256) {
-        address[] memory path = new address[](2);
-        path[0] = address(this);
-        path[1] = uniswapV2Router.WETH();
-        try uniswapV2Router.getAmountsOut(tokenAmount, path) returns (uint256[] memory amounts) {
-            return amounts[1].mul(pct).div(100);
-        } catch {
-            return 0;
-        }
+        return true;
     }
 
     function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
-        // approve token transfer to cover all possible scenarios
         _approve(address(this), address(uniswapV2Router), tokenAmount);
 
-        // add the liquidity
-        // Capture the return values
         (uint256 amountToken, uint256 amountETH, uint256 liquidity) = uniswapV2Router.addLiquidityETH{value: ethAmount}(
             address(this),
             tokenAmount,
-            tokenAmount.mul(95).div(100), // slippage is unavoidable
-            ethAmount.mul(95).div(100), // slippage is unavoidable
+            0, // Accept exact pool ratio
+            0, // Accept exact pool ratio
             address(0xdead),
             block.timestamp
         );
         
-        // Emit the event to use the variables
         emit LiquidityAdded(amountToken, amountETH, liquidity);
     }
 
