@@ -1694,6 +1694,9 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         emit SwapAndLiquify(half, newBalance, otherHalf);
     }
 
+    
+
+
     function swapTokensForEth(uint256 tokenAmount) private {
         // 1. Ping the oracle to see if it needs updating
         _updateTWAP(); 
@@ -1714,7 +1717,9 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
             uint256 expectedOut = (_twapPrice112x112 * tokenAmount) >> 112;
             
             // Allow 20% slippage from the safe TWAP price
-            amountOutMin = expectedOut.mul(80).div(100);
+            amountOutMin = expectedOut.mul(95).div(100);
+        } else {
+            amountOutMin = _getSpotAmountOutMin(tokenAmount, 98);
         }
 
         // 3. Execute the swap
@@ -1729,6 +1734,17 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         );
     }
 
+    function _getSpotAmountOutMin(uint256 tokenAmount, uint256 pct) private view returns (uint256) {
+        address[] memory path = new address[](2);
+        path[0] = address(this);
+        path[1] = uniswapV2Router.WETH();
+        try uniswapV2Router.getAmountsOut(tokenAmount, path) returns (uint256[] memory amounts) {
+            return amounts[1].mul(pct).div(100);
+        } catch {
+            return 0;
+        }
+    }
+
     function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
         // approve token transfer to cover all possible scenarios
         _approve(address(this), address(uniswapV2Router), tokenAmount);
@@ -1738,8 +1754,8 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
         (uint256 amountToken, uint256 amountETH, uint256 liquidity) = uniswapV2Router.addLiquidityETH{value: ethAmount}(
             address(this),
             tokenAmount,
-            0, // slippage is unavoidable
-            0, // slippage is unavoidable
+            tokenAmount.mul(95).div(100), // slippage is unavoidable
+            ethAmount.mul(95).div(100), // slippage is unavoidable
             address(0xdead),
             block.timestamp
         );
