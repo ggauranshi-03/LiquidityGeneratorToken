@@ -1700,53 +1700,33 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
             timeElapsed = blockTimestamp - _blockTimestampLast; 
         }
 
-        // 1. Warmup & Stale Protection
-        if (!twapInitialized || timeElapsed < TWAP_WINDOW || timeElapsed > maxTwapAge) {
+        // 1. Warmup Protection: Update TWAP snapshot and delay the swap if we don't have 5 mins of data yet.
+        if (!twapInitialized || timeElapsed < TWAP_WINDOW) {
             _updateTWAP();
             return false; 
         }
 
-        // 2. Update the TWAP oracle for the current window
+        // 2. Stale Oracle Protection (Crucial): 
+
+        if (timeElapsed > 2 hours) {
+            _updateTWAP();
+            return false;
+        }
+
+        // 3. Oracle is healthy. Update it and calculate secure price.
         _updateTWAP();
-        if (_twapPrice112x112 == 0) return false;
 
-        // 3. DEVIATION CHECK: Is the pool currently manipulated?
-        IUniswapV2Pair pair = IUniswapV2Pair(uniswapV2Pair);
-        (uint112 reserve0, uint112 reserve1, ) = pair.getReserves();
-        
-        if (reserve0 == 0 || reserve1 == 0) return false;
-
-        // Calculate current instantaneous spot price
-        uint256 currentSpotPrice;
-        if (_isToken0) {
-            currentSpotPrice = (uint256(reserve1) << 112) / reserve0;
+        uint256 amountOutMin = 0;
+        if (_twapPrice112x112 > 0) {
+            uint256 expectedOut = (_twapPrice112x112 * tokenAmount) >> 112;
+            amountOutMin = expectedOut.mul(95).div(100); // 5% slippage from true average
         } else {
-            currentSpotPrice = (uint256(reserve0) << 112) / reserve1;
+            return false; // Safety catch
         }
 
-        // Check if spot price deviates more than 5% from TWAP
-        uint256 lowerBound = _twapPrice112x112.mul(10000 - slippageToleranceBps).div(10000);
-        uint256 upperBound = _twapPrice112x112.mul(10000 + slippageToleranceBps).div(10000);
-
-        if (currentSpotPrice < lowerBound || currentSpotPrice > upperBound) {
-            // The pool is currently highly volatile or manipulated. Abort the swap.
-            return false; 
-        }
-
-        // 4. THE EXECUTION CURVE: Pool is healthy. Get realistic output including price impact.
         address[] memory path = new address[](2);
         path[0] = address(this);
         path[1] = uniswapV2Router.WETH();
-
-        uint256 expectedSpotOut;
-        try uniswapV2Router.getAmountsOut(tokenAmount, path) returns (uint256[] memory amounts) {
-            expectedSpotOut = amounts[1];
-        } catch {
-            return false; // Safely catch weird router errors
-        }
-
-        // 5. Apply slippage tolerance to the realistic execution curve
-        uint256 amountOutMin = expectedSpotOut.mul(10000 - slippageToleranceBps).div(10000);
 
         _approve(address(this), address(uniswapV2Router), tokenAmount);
 
