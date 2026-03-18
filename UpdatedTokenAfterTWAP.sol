@@ -1422,7 +1422,8 @@ contract LiquidityGeneratorToken is IERC20, Ownable, BaseToken {
             uint256 price0Cumulative = pair.price0CumulativeLast();
             uint256 price1Cumulative = pair.price1CumulativeLast();
             (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLastPair) = pair.getReserves();
-            
+            if (reserve0 == 0 || reserve1 == 0) return;
+
             // 2. Add counterfactual data if the pair hasn't updated in this exact block
             if (blockTimestampLastPair != blockTimestamp) {
                 uint32 timeElapsedPair;
